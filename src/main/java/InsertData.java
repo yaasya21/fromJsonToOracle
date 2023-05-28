@@ -1,75 +1,117 @@
+import org.json.JSONArray;
+import org.json.JSONObject;
+import java.io.*;
 import java.sql.*;
+import java.util.zip.ZipFile;
 
 public class InsertData {
     public static void main(String[] args) throws Exception {
-        Connection con = null;
-        PreparedStatement insert = null;
-        PreparedStatement createTable = null;
-        PreparedStatement truncateStatement = null;
-        PreparedStatement dropTable = null;
-
         // Establishing a connection to the Oracle database
         // Write your data here
         String url = "jdbc:oracle:thin:@18.133.58.218:15215/XEPDB1";
         String user = "student_in01_04";
         String password = "student";
+        String zipFilePath = "archive.zip";
+        Connection connection = null;
+        PreparedStatement metadataStatement = null;
+        PreparedStatement networksStatement = null;
 
-        //Number of experiments
-        int tryN = 35;
-
-        // Setting values for the parameters in the SQL query
         try {
-            // Establish connection to Oracle database
+            // Load the Oracle JDBC driver
             Class.forName("oracle.jdbc.driver.OracleDriver");
-            con = DriverManager.getConnection(url, user, password);
-            createTable = con.prepareStatement("CREATE TABLE TEST(" +
-                                                    "VALUE1 VARCHAR(10)," +
-                                                    "VALUE2 VARCHAR(10)," +
-                                                    "VALUE3 VARCHAR(10)," +
-                                                    "VALUE4 VARCHAR(10)," +
-                                                    "VALUE5 VARCHAR(10)" +
-                                                    ")");
-            createTable.executeUpdate();
-            // Creating a PreparedStatement object to execute SQL queries
-            insert = con.prepareStatement("INSERT INTO TEST (TEST.VALUE1, TEST.VALUE2, TEST.VALUE3, TEST.VALUE4, TEST.VALUE5) VALUES (?, ?, ?, ?, ?)");
-            truncateStatement = con.prepareStatement("TRUNCATE TABLE TEST");
-            dropTable = con.prepareStatement("DROP TABLE TEST");
 
-            long average = 0, startTime, endTime;
-            // We will do 35 experiments
-            for(int n = 0; n < tryN; n++) {
-                // Set values for each record and adding that insert into batch
-                for (int i = 0; i < 1; i++) {
-                    insert.setString(1, "oracle");
-                    insert.setString(2, "oracle");
-                    insert.setString(3, "oracle");
-                    insert.setString(4, "oracle");
-                    insert.setString(5, "oracle");
-                    insert.addBatch();
+            // Establish the database connection
+            connection = DriverManager.getConnection(url, user, password);
+
+            // Prepare the SQL statement for metadata insertion
+            String metadataSql = "INSERT INTO networks_metadata (instance, startDate, uuid) VALUES (?, TO_TIMESTAMP(?, 'YYYY-MM-DD HH24:MI:SS.FF3'), ?)";
+            metadataStatement = connection.prepareStatement(metadataSql);
+
+            // Prepare the SQL statement for networks insertion
+            String networksSql = "INSERT INTO networks (uuid, SSID, capabilities, status, security, debug, \"level\", BSSID) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
+            networksStatement = connection.prepareStatement(networksSql);
+
+            // Open the zip file
+            ZipFile zipFile = new ZipFile(zipFilePath);
+
+            // Iterate over the zip entries
+            PreparedStatement finalMetadataStatement = metadataStatement;
+            PreparedStatement finalNetworksStatement = networksStatement;
+            zipFile.stream().forEach(entry -> {
+                try {
+                    // Read the content of the zip entry
+                    InputStream inputStream = zipFile.getInputStream(entry);
+                    InputStreamReader reader = new InputStreamReader(inputStream);
+                    BufferedReader bufferedReader = new BufferedReader(reader);
+
+                    // Read the JSON content
+                    StringBuilder jsonContent = new StringBuilder();
+                    String line;
+                    while ((line = bufferedReader.readLine()) != null) {
+                        jsonContent.append(line);
+                    }
+
+                    // Parse the JSON structure
+                    JSONObject jsonObject = new JSONObject(jsonContent.toString());
+
+                    // Insert metadata into networks_metadata table
+                    String instance = jsonObject.getString("instance");
+                    String startDate = jsonObject.getString("startDate");
+                    String uuid = jsonObject.getString("uuid");
+                    finalMetadataStatement.setString(1, instance);
+                    finalMetadataStatement.setString(2, startDate);
+                    finalMetadataStatement.setString(3, uuid);
+                    finalMetadataStatement.executeUpdate();
+
+                    // Insert network details into networks table
+                    JSONArray networksArray = jsonObject.getJSONArray("networks");
+                    for (int i = 0; i < networksArray.length(); i++) {
+                        JSONObject networkObj = networksArray.getJSONObject(i);
+                        String ssid = networkObj.getString("SSID");
+                        String capabilities = networkObj.getString("capabilities");
+                        String status = networkObj.getString("status");
+                        String security = networkObj.getString("security");
+                        String debug = networkObj.getString("debug");
+                        String level = networkObj.getString("level");
+                        String bssid = networkObj.getString("BSSID");
+                        finalNetworksStatement.setString(1, uuid);
+                        finalNetworksStatement.setString(2, ssid);
+                        finalNetworksStatement.setString(3, capabilities);
+                        finalNetworksStatement.setString(4, status);
+                        finalNetworksStatement.setString(5, security);
+                        finalNetworksStatement.setString(6, debug);
+                        finalNetworksStatement.setString(7, level);
+                        finalNetworksStatement.setString(8, bssid);
+                        finalNetworksStatement.executeUpdate();
+                    }
+
+                    // Close the resources
+                    bufferedReader.close();
+                    reader.close();
+                    inputStream.close();
+                } catch (IOException | SQLException e) {
+                    e.printStackTrace();
                 }
+            });
 
-                // Running of timer
-                startTime = System.currentTimeMillis();
-                // Execute batch insert
-                int[] inserted = insert.executeBatch();
-                endTime = System.currentTimeMillis();
-                average += (endTime - startTime);
+            // Close the zip file
+            zipFile.close();
 
-                // Truncate the table before new transaction
-                truncateStatement.executeUpdate();
-            }
-            System.out.println("Average time taken: " + (average/tryN) + " miliseconds after " + tryN + " tries");
-            dropTable.executeUpdate();
-        } catch (SQLException e) {
+            System.out.println("Data insertion completed successfully.");
+        } catch (ClassNotFoundException | SQLException | IOException e) {
             e.printStackTrace();
         } finally {
-            // Close statements and connection
+            // Close the database connection and prepared statements
             try {
-                if (createTable != null) createTable.close();
-                if (insert != null) insert.close();
-                if (truncateStatement != null) truncateStatement.close();
-                if (dropTable != null) dropTable.close();
-                if (con != null) con.close();
+                if (metadataStatement != null) {
+                    metadataStatement.close();
+                }
+                if (networksStatement != null) {
+                    networksStatement.close();
+                }
+                if (connection != null) {
+                    connection.close();
+                }
             } catch (SQLException e) {
                 e.printStackTrace();
             }
